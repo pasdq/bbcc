@@ -1,0 +1,18 @@
+[package]
+name = "bbcc"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+evalexpr = "11.3.0"
+lazy_static = "1.4.0"
+regex = "1.5.4"
+notify = "6.1.1"
+ctrlc = "3.2"
+num-format = "0.4"
+
+[profile.release]
+opt-level = 'z'          # 优化级别为“z”，这是最高级别的优化
+lto = true               # 启用 Link-Time Optimization（LTO）
+codegen-units = 1        # 将编译单元设置为1以减少可执行文件大小
+panic = "abort"          # 不需要捕获 panic
