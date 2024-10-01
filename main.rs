@@ -17,6 +17,7 @@ use num_format::{Locale, ToFormattedString};  // 数字格式化库
 // 全局静态变量 PRECISION，用于控制小数精度，线程安全
 lazy_static! {
     static ref PRECISION: Mutex<usize> = Mutex::new(4);  // 设置小数精度为4
+	static ref EXPRESSION_REGEX: Regex = Regex::new(r"\[([^\]]*)\]").unwrap();
 }
 
 fn main() {
@@ -67,10 +68,13 @@ fn main() {
 
 // 清空屏幕函数
 fn clear_screen() {
-    if cfg!(target_os = "windows") {
-        let _ = Command::new("cmd").args(&["/C", "cls"]).status();  // Windows 使用 cls 清屏
-    } else {
-        let _ = Command::new("clear").status();  // Unix-like 系统使用 clear 清屏
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("cmd").args(&["/C", "cls"]).status();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = Command::new("clear").status();
     }
 }
 
@@ -99,7 +103,7 @@ fn watch_file(path: &Path) -> notify::Result<()> {
                     if let Err(e) = process_file(path.to_str().unwrap()) {
                         eprintln!("Error: {}", e);
                     }
-                    println!("------\nAwaiting the update of {} ...\nBBCC V1.0.0\n------", path.display());
+                    println!("\nAwaiting the update of {} ...\nBBCC V1.0.0", path.display());
                 }
                 Ok(_) => {}  // 忽略其他事件
                 Err(e) => eprintln!("Watch error: {:?}", e),  // 错误处理
@@ -122,49 +126,55 @@ fn process_from_stdin() -> io::Result<()> {
 
 // 处理文件内容
 fn process_file(filename: &str) -> io::Result<()> {
-    let file = File::open(filename)?;  // 打开文件
-    let reader = io::BufReader::new(file);  // 创建缓冲读取器
-    process_lines(reader)  // 处理文件中的每一行
+    let file = File::open(filename)?;
+    let reader = io::BufReader::new(file);
+    process_lines(reader)
 }
 
 // 处理输入行的函数
-fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
-    let mut variables: HashMap<String, String> = HashMap::new();  // 用于存储变量的哈希表
-
-    for line in reader.lines() {
-        let line = line?;  // 读取行
-        let line = line.trim();  // 去除空白字符
-
-        let line = if let Some((code, _comment)) = line.split_once("//") {
-            code.trim()  // 去除注释部分
-        } else {
-            line
-        };
-
-        if line.is_empty() {
-            continue;  // 跳过空行
+fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {  
+    let mut variables: HashMap<String, String> = HashMap::new();  // 用于存储变量的哈希表  
+  
+    for line in reader.lines() {  
+        let line = line?;  // 读取行  
+        let original_line = line.replace("\t", "    ");  // 将制表符替换为四个空格  
+  
+        let line = if let Some((code, _comment)) = original_line.split_once("//") {  
+            code  // 不再使用 .trim()，保留行中的空格和制表符  
+        } else {  
+            &original_line  
+        };  
+  
+        if line.is_empty() {  
+            continue;  // 跳过空行  
         }
 
-        // 处理变量赋值语句
-        if let Some((key, value)) = line.split_once(":=") {
-            let key = key.trim();
-            let value = value.trim();
-
-            match evaluate_expression(value, &variables) {
-                Ok(result) => {
-                    variables.insert(key.to_string(), result);  // 将结果存储在变量表中
-                }
-                Err(err_msg) => {
-                    eprintln!("Error: Could not evaluate expression '{}'. Reason: {}", value, err_msg);
-                }
-            }
-        } else {
-            let output = process_text_with_expressions(line, &variables);  // 处理表达式
-            println!("{}", output);  // 输出结果
+        // 如果行以 "---" 开头，输出一个空行
+        if line.starts_with("---") {
+            println!();  // 输出空行
+            continue;  // 跳过处理该行
         }
-    }
-
-    Ok(())
+  
+        // 处理变量赋值语句  
+        if let Some((key, value)) = line.split_once(":=") {  
+            let key = key.trim();  // 仍然需要修整变量名  
+            let value = value.trim();  // 仍然需要修整值  
+  
+            match evaluate_expression(value, &variables) {  
+                Ok(result) => {  
+                    variables.insert(key.to_string(), result);  // 将结果存储在变量表中  
+                }  
+                Err(err_msg) => {  
+                    eprintln!("Error: Could not evaluate expression '{}'. Reason: {}", value, err_msg);  
+                }  
+            }  
+        } else {  
+            let output = process_text_with_expressions(&original_line, &variables);  // 使用替换后的原始行进行表达式处理  
+            println!("{}", output);  // 输出结果，保留原始格式  
+        }  
+    }  
+  
+    Ok(())  
 }
 
 // 计算表达式或求解线性方程
@@ -235,21 +245,20 @@ fn evaluate_simple_expression(
 fn replace_variables(expr: String, variables: &HashMap<String, String>) -> String {
     let mut replaced_expr = expr;
     for (key, value) in variables {
-        let cleaned_value = value.replace(",", "");  // 删除千位分隔符
-        replaced_expr = replaced_expr.replace(key, &cleaned_value);  // 替换变量
+        let cleaned_value = value.replace(",", "");
+        replaced_expr = replaced_expr.replace(key, &cleaned_value);
     }
     replaced_expr
 }
 
 // 处理包含表达式的文本行
 fn process_text_with_expressions(line: &str, variables: &HashMap<String, String>) -> String {
-    let re = Regex::new(r"\{([^}]*)\}").unwrap();  // 匹配 {} 内的表达式
-
-    let result = re.replace_all(line, |caps: &regex::Captures| {
+    // 使用预编译的静态正则表达式
+    let result = EXPRESSION_REGEX.replace_all(line, |caps: &regex::Captures| {
         let expr = &caps[1];
         match evaluate_expression(expr, variables) {
-            Ok(result) => result,  // 替换为计算结果
-            Err(err_msg) => format!("{{Error: {}}}", err_msg),  // 错误处理
+            Ok(result) => result,
+            Err(err_msg) => format!("[Error: {}]", err_msg),
         }
     });
 
