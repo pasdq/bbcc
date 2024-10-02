@@ -1,3 +1,4 @@
+use colored::*; //终端颜色设置
 use std::env;  // 处理命令行参数
 use std::fs::File;  // 处理文件操作
 use std::io::{self, BufRead};  // 标准输入/输出操作
@@ -103,7 +104,7 @@ fn watch_file(path: &Path) -> notify::Result<()> {
                     if let Err(e) = process_file(path.to_str().unwrap()) {
                         eprintln!("Error: {}", e);
                     }
-                    println!("\nAwaiting the update of {} ...\nBBCC V1.0.0", path.display());
+                    println!("\n- Monitoring changes to {} in real-time.\n- BBCC V1.0.0", path.display());
                 }
                 Ok(_) => {}  // 忽略其他事件
                 Err(e) => eprintln!("Watch error: {:?}", e),  // 错误处理
@@ -253,16 +254,44 @@ fn replace_variables(expr: String, variables: &HashMap<String, String>) -> Strin
 
 // 处理包含表达式的文本行
 fn process_text_with_expressions(line: &str, variables: &HashMap<String, String>) -> String {
-    // 使用预编译的静态正则表达式
     let result = EXPRESSION_REGEX.replace_all(line, |caps: &regex::Captures| {
         let expr = &caps[1];
         match evaluate_expression(expr, variables) {
-            Ok(result) => result,
+            Ok(result) => highlight_numbers(&result),  // 为结果中的数字加颜色
             Err(err_msg) => format!("[Error: {}]", err_msg),
         }
     });
 
-    result.to_string()
+    let result_with_color = highlight_parentheses(result.to_string());
+    let final_result = highlight_special_chars(result_with_color);
+
+    final_result
+}
+
+// 新增的函数，用于将括号及其内容显示为蓝色
+fn highlight_parentheses(text: String) -> String {
+    let paren_regex = Regex::new(r"\((.*?)\)").unwrap();
+    paren_regex.replace_all(&text, |caps: &regex::Captures| {
+        // 使用 to_string() 方法将 str 类型转换为 String 类型
+        format!("{}", format!("({})", caps[1].to_string()).red())
+    }).to_string()
+}
+
+fn highlight_numbers(text: &str) -> String {
+    // 修改正则表达式，匹配千位分隔符的数字
+    let number_regex = Regex::new(r"(\d{1,3}(,\d{3})*(\.\d+)?)").unwrap();
+    number_regex.replace_all(text, |caps: &regex::Captures| {
+        // 将整个数字（包括千位分隔符）设置为绿色
+        format!("{}", caps[0].green())
+    }).to_string()
+}
+
+// 处理特殊符号，使其显示为蓝色
+fn highlight_special_chars(text: String) -> String {
+    let special_chars_regex = Regex::new(r"[%#$@\-=:]").unwrap();  // 正确匹配 %#$@-=
+    special_chars_regex.replace_all(&text, |caps: &regex::Captures| {
+        format!("{}", caps[0].yellow())
+    }).to_string()
 }
 
 // 求解线性方程的函数
