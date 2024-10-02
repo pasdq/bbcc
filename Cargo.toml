@@ -10,6 +10,7 @@ regex = "1.5.4"
 notify = "6.1.1"
 ctrlc = "3.2"
 num-format = "0.4"
+colored = "2.0"
 
 [profile.release]
 opt-level = 'z'          # 优化级别为“z”，这是最高级别的优化
