@@ -179,8 +179,13 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
 }
 
 // 计算表达式或求解线性方程
+// 计算表达式或求解线性方程
 fn evaluate_expression(expr: &str, variables: &HashMap<String, String>) -> Result<String, String> {
-    if let Some((lhs, rhs)) = expr.split_once('=') {
+    if (expr.starts_with('"') && expr.ends_with('"')) || (expr.starts_with('\'') && expr.ends_with('\'')) {
+        // 处理字符串赋值，去掉前后引号（双引号或单引号）
+        let value = expr.trim_matches(|c| c == '"' || c == '\'').to_string();
+        Ok(value)
+    } else if let Some((lhs, rhs)) = expr.split_once('=') {
         solve_linear_equation(lhs, rhs, variables)  // 求解线性方程
     } else {
         evaluate_simple_expression(expr, variables)  // 计算简单表达式
@@ -193,10 +198,20 @@ fn replace_commas(expr: String) -> String {
 }
 
 // 计算简单表达式
+// 计算简单表达式
 fn evaluate_simple_expression(
     expr: &str,
     variables: &HashMap<String, String>
 ) -> Result<String, String> {
+    // 如果表达式本身是一个变量名，且该变量的值是字符串，直接返回该变量值
+    if let Some(value) = variables.get(expr) {
+        if (value.starts_with('"') && value.ends_with('"')) || (value.starts_with('\'') && value.ends_with('\'')) {
+            // 如果变量是字符串，直接返回其值去掉引号（双引号或单引号）
+            return Ok(value.trim_matches(|c| c == '"' || c == '\'').to_string());
+        }
+        return Ok(value.to_string());
+    }
+
     let replaced_expr = replace_variables(expr.to_string(), variables);
     let replaced_expr = replace_commas(replaced_expr);
     let replaced_expr = replaced_expr.replace("%", "/100.0");
