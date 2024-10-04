@@ -204,17 +204,47 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
 
 // 计算表达式或求解线性方程
 fn evaluate_expression(expr: &str, variables: &HashMap<String, String>) -> Result<String, String> {
-    if
-        (expr.starts_with('"') && expr.ends_with('"')) ||
-        (expr.starts_with('\'') && expr.ends_with('\''))
-    {
-        // 处理字符串赋值，去掉前后引号（双引号或单引号）
-        let value = expr.trim_matches(|c| (c == '"' || c == '\'')).to_string();
-        Ok(value)
-    } else if let Some((lhs, rhs)) = expr.split_once('=') {
-        solve_linear_equation(lhs, rhs, variables) // 求解线性方程
+    // 检查表达式是否为条件表达式
+    if expr.starts_with("{if") && expr.ends_with('}') {
+        let condition_expr = &expr[1..expr.len() - 1]; // 去掉大括号
+        let if_regex = Regex::new(r"if\s+(.+?)\s+then\s+(.+?)(?:\s+else\s+(.+))?$").unwrap();
+
+        if let Some(caps) = if_regex.captures(condition_expr) {
+            let condition = &caps[1];
+            let then_value = &caps[2];
+            let else_value = caps.get(3).map_or("", |m| m.as_str());
+
+            // 解析条件
+            let condition_result = evaluate_condition(condition, variables);
+
+            // 根据条件结果返回 then 或 else 部分
+            if condition_result {
+                return evaluate_expression(then_value, variables);
+            } else {
+                return evaluate_expression(else_value, variables);
+            }
+        } else {
+            return Err("Invalid conditional expression".to_string());
+        }
+    }
+
+    // 原有的表达式处理逻辑
+    let clean_expr = if expr.starts_with('[') && expr.ends_with(']') {
+        &expr[1..expr.len() - 1]
     } else {
-        evaluate_simple_expression(expr, variables) // 计算简单表达式
+        expr
+    };
+
+    if
+        (clean_expr.starts_with('"') && clean_expr.ends_with('"')) ||
+        (clean_expr.starts_with('\'') && clean_expr.ends_with('\''))
+    {
+        let value = clean_expr.trim_matches(|c| (c == '"' || c == '\'')).to_string();
+        Ok(value)
+    } else if let Some((lhs, rhs)) = clean_expr.split_once('=') {
+        solve_linear_equation(lhs, rhs, variables)
+    } else {
+        evaluate_simple_expression(clean_expr, variables)
     }
 }
 
@@ -344,8 +374,9 @@ fn evaluate_then_or_else(value: &str, variables: &HashMap<String, String>) -> St
         if let Some(end_bracket) = remaining[start_bracket..].find("]") {
             // 处理 [] 内的表达式
             let expression = &remaining[start_bracket + 1..start_bracket + end_bracket];
-            let expr_result = evaluate_expression(expression, variables)
-                .unwrap_or_else(|_| "[Error]".to_string());
+            let expr_result = evaluate_expression(expression, variables).unwrap_or_else(|_|
+                "[Error]".to_string()
+            );
 
             // 将 [] 前的文本和表达式的结果添加到结果中
             result.push_str(&remaining[..start_bracket]);
@@ -377,28 +408,35 @@ fn evaluate_condition(condition: &str, variables: &HashMap<String, String>) -> b
     // 支持基本的条件运算符
     if condition.contains(">=") {
         let parts: Vec<&str> = condition.split(">=").collect();
-        return parse_value(parts[0], variables) >= parse_value(parts[1], variables);
+        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) >=
+            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
     } else if condition.contains("<=") {
         let parts: Vec<&str> = condition.split("<=").collect();
-        return parse_value(parts[0], variables) <= parse_value(parts[1], variables);
+        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) <=
+            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
     } else if condition.contains(">") {
         let parts: Vec<&str> = condition.split(">").collect();
-        return parse_value(parts[0], variables) > parse_value(parts[1], variables);
+        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) >
+            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
     } else if condition.contains("<") {
         let parts: Vec<&str> = condition.split("<").collect();
-        return parse_value(parts[0], variables) < parse_value(parts[1], variables);
+        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) <
+            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
     } else if condition.contains("==") {
         let parts: Vec<&str> = condition.split("==").collect();
-        return parse_value(parts[0], variables) == parse_value(parts[1], variables);
+        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) ==
+            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
     } else if condition.contains("!=") {
         let parts: Vec<&str> = condition.split("!=").collect();
-        return parse_value(parts[0], variables) != parse_value(parts[1], variables);
+        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) !=
+            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
     }
 
     // 如果条件是一个简单的变量或布尔值，处理它
     let value = parse_value(condition, variables);
     value != "0" && value.to_lowercase() != "false"
 }
+
 
 // 解析变量和表达式的辅助函数 parse_value
 fn parse_value(expression: &str, variables: &HashMap<String, String>) -> String {
