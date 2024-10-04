@@ -144,11 +144,11 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
     let mut variables: HashMap<String, String> = HashMap::new(); // 用于存储变量的哈希表
 
     for line in reader.lines() {
-        let line = line?; // 读取行
-        let original_line = line.replace("\t", "    "); // 将制表符替换为四个空格
+        let line = line?;
+        let original_line = line.replace("\t", "    ");
 
         let line = if let Some((code, _comment)) = original_line.split_once("//") {
-            code // 不再使用 .trim()，保留行中的空格和制表符
+            code
         } else {
             &original_line
         };
@@ -156,8 +156,8 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
         if line.is_empty() {
             continue; // 跳过空行
         }
-
-        // 以 # 开头的行要原样输出
+		
+		// 以 # 开头的行要原样输出
         // 输出前, 先删掉 #, 然后再删除剩下内容的前后空格
         if line.starts_with('#') {
             let line = line.trim_start_matches('#').trim();
@@ -171,25 +171,22 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
             continue; // 跳过处理该行
         }
 
-        // 处理变量赋值语句
+        // 检查是否为赋值语句，使用 := 进行变量赋值
         if let Some((key, value)) = line.split_once(":=") {
-            let key = key.trim(); // 仍然需要修整变量名
-            let value = value.trim(); // 仍然需要修整值
+            let key = key.trim(); // 处理变量名
+            let value = value.trim(); // 处理表达式
 
+            // 评估表达式并赋值给变量
             match evaluate_expression(value, &variables) {
                 Ok(result) => {
                     variables.insert(key.to_string(), result); // 将结果存储在变量表中
                 }
                 Err(err_msg) => {
-                    eprintln!(
-                        "Error: Could not evaluate expression '{}'. Reason: {}",
-                        value,
-                        err_msg
-                    );
+                    eprintln!("Error: Could not evaluate expression '{}'. Reason: {}", value, err_msg);
                 }
             }
         } else {
-            let output = process_text_with_expressions(&original_line, &variables); // 使用替换后的原始行进行表达式处理
+            let output = process_text_with_expressions(&original_line, &variables); // 处理包含表达式的文本行
             println!("{}", output); // 输出结果，保留原始格式
         }
     }
@@ -198,20 +195,33 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
 }
 
 // 计算表达式或求解线性方程
-// 计算表达式或求解线性方程
 fn evaluate_expression(expr: &str, variables: &HashMap<String, String>) -> Result<String, String> {
-    if
-        (expr.starts_with('"') && expr.ends_with('"')) ||
-        (expr.starts_with('\'') && expr.ends_with('\''))
-    {
-        // 处理字符串赋值，去掉前后引号（双引号或单引号）
-        let value = expr.trim_matches(|c| (c == '"' || c == '\'')).to_string();
-        Ok(value)
-    } else if let Some((lhs, rhs)) = expr.split_once('=') {
-        solve_linear_equation(lhs, rhs, variables) // 求解线性方程
-    } else {
-        evaluate_simple_expression(expr, variables) // 计算简单表达式
+    // 检查表达式是否以 [] 包裹
+    if expr.starts_with('[') && expr.ends_with(']') {
+        // 去掉方括号
+        let inner_expr = &expr[1..expr.len()-1].trim();
+
+        // 处理 if-then-else 语句
+        if inner_expr.starts_with("if") {
+            return evaluate_if_expression(inner_expr, variables);
+        } else {
+            // 否则处理一般的表达式
+            return evaluate_simple_expression(inner_expr, variables);
+        }
     }
+
+    // 处理字符串赋值
+    if (expr.starts_with('"') && expr.ends_with('"')) || (expr.starts_with('\'') && expr.ends_with('\'')) {
+        let value = expr.trim_matches(|c| (c == '"' || c == '\'')).to_string();
+        return Ok(value);
+    }
+
+    // 处理等号表达式
+    if let Some((lhs, rhs)) = expr.split_once('=') {
+        return solve_linear_equation(lhs, rhs, variables);
+    }
+
+    evaluate_simple_expression(expr, variables)
 }
 
 // 替换表达式中的千位分隔符
@@ -219,7 +229,6 @@ fn replace_commas(expr: String) -> String {
     expr.replace(",", "")
 }
 
-// 计算简单表达式
 // 计算简单表达式
 fn evaluate_simple_expression(
     expr: &str,
@@ -296,16 +305,119 @@ fn replace_variables(expr: String, variables: &HashMap<String, String>) -> Strin
 fn process_text_with_expressions(line: &str, variables: &HashMap<String, String>) -> String {
     let result = EXPRESSION_REGEX.replace_all(line, |caps: &regex::Captures| {
         let expr = &caps[1];
-        match evaluate_expression(expr, variables) {
-            Ok(result) => highlight_numbers(&result), // 为结果中的数字加颜色
-            Err(err_msg) => format!("[Error: {}]", err_msg),
+        if expr.starts_with("if") {
+            match evaluate_if_expression(expr, variables) {
+                Ok(result) => result,
+                Err(err_msg) => format!("[Error: {}]", err_msg),
+            }
+        } else {
+            match evaluate_expression(expr, variables) {
+                Ok(result) => highlight_numbers(&result),
+                Err(err_msg) => format!("[Error: {}]", err_msg),
+            }
         }
     });
-
     let result_with_color = highlight_parentheses(result.to_string());
     let final_result = highlight_special_chars(result_with_color);
-
     final_result
+}
+
+// 处理包含 if 的表达式
+fn evaluate_if_expression(expr: &str, variables: &HashMap<String, String>) -> Result<String, String> {
+    let expr = expr.trim_start_matches("if");
+    let mut parts = expr.split("then");
+
+    if parts.clone().collect::<Vec<_>>().len() != 2 {
+        return Err("Invalid if expression".to_string());
+    }
+
+    let condition = parts.next().unwrap().trim();
+    let rest = parts.next().unwrap().trim();
+
+    let mut rest_parts = rest.split("else");
+    let then_part = rest_parts.next().unwrap().trim().trim_start_matches('{').trim_end_matches('}');
+
+	// 如果没有 else 部分，则默认为空字符串
+    let else_part = rest_parts.next().map_or("", |s| s.trim().trim_start_matches('{').trim_end_matches('}'));
+
+    // 解析 if 条件
+    let mut condition_parts = condition.split_whitespace();
+    let left = condition_parts.next().unwrap().to_string();
+    let op = condition_parts.next().unwrap().to_string();
+    let right = condition_parts.next().unwrap().to_string();
+
+    // 评估左侧和右侧表达式
+    let left_value = match evaluate_expression(&left, variables) {
+        Ok(value) => value,
+        Err(_) => return Err("Invalid left operand".to_string()),
+    };
+    let right_value = match evaluate_expression(&right, variables) {
+        Ok(value) => value,
+        Err(_) => return Err("Invalid right operand".to_string()),
+    };
+
+    // 根据条件返回 then 或 else 部分的值
+    match op.as_str() {
+        "==" => {
+            if left_value == right_value {
+                Ok(then_part.to_string())
+            } else {
+                Ok(else_part.to_string())
+            }
+        }
+        "!=" => {  // 新增不等于判断
+            if left_value != right_value {
+                Ok(then_part.to_string())
+            } else {
+                Ok(else_part.to_string())
+            }
+        }
+        ">" => {
+            if let (Ok(left_num), Ok(right_num)) = (left_value.parse::<f64>(), right_value.parse::<f64>()) {
+                if left_num > right_num {
+                    Ok(then_part.to_string())
+                } else {
+                    Ok(else_part.to_string())
+                }
+            } else {
+                Err("Invalid operands for >".to_string())
+            }
+        }
+        "<" => {
+            if let (Ok(left_num), Ok(right_num)) = (left_value.parse::<f64>(), right_value.parse::<f64>()) {
+                if left_num < right_num {
+                    Ok(then_part.to_string())
+                } else {
+                    Ok(else_part.to_string())
+                }
+            } else {
+                Err("Invalid operands for <".to_string())
+            }
+        }
+        ">=" => {
+            if let (Ok(left_num), Ok(right_num)) = (left_value.parse::<f64>(), right_value.parse::<f64>()) {
+                if left_num >= right_num {
+                    Ok(then_part.to_string())
+                } else {
+                    Ok(else_part.to_string())
+                }
+            } else {
+                Err("Invalid operands for >=".to_string())
+            }
+        }
+        "<=" => {
+            if let (Ok(left_num), Ok(right_num)) = (left_value.parse::<f64>(), right_value.parse::<f64>()) {
+                if left_num <= right_num {
+                    Ok(then_part.to_string())
+                } else {
+                    Ok(else_part.to_string())
+                }
+            } else {
+                Err("Invalid operands for <=".to_string())
+            }
+        }
+        _ => Err("Invalid operator".to_string()),
+    }
 }
 
 // 新增的函数，用于将括号及其内容显示为蓝色
