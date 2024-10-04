@@ -203,41 +203,37 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
 }
 
 // 计算表达式或求解线性方程
+// 修改 evaluate_expression 函数以支持[sum]和[avg]的计算
+
 fn evaluate_expression(expr: &str, variables: &HashMap<String, String>) -> Result<String, String> {
-    // 检查表达式是否为条件表达式
-    if expr.starts_with("{if") && expr.ends_with('}') {
-        let condition_expr = &expr[1..expr.len() - 1]; // 去掉大括号
-        let if_regex = Regex::new(r"if\s+(.+?)\s+then\s+(.+?)(?:\s+else\s+(.+))?$").unwrap();
-
-        if let Some(caps) = if_regex.captures(condition_expr) {
-            let condition = &caps[1];
-            let then_value = &caps[2];
-            let else_value = caps.get(3).map_or("", |m| m.as_str());
-
-            // 解析条件
-            let condition_result = evaluate_condition(condition, variables);
-
-            // 根据条件结果返回 then 或 else 部分
-            if condition_result {
-                return evaluate_expression(then_value, variables);
-            } else {
-                return evaluate_expression(else_value, variables);
-            }
-        } else {
-            return Err("Invalid conditional expression".to_string());
-        }
-    }
-
-    // 原有的表达式处理逻辑
     let clean_expr = if expr.starts_with('[') && expr.ends_with(']') {
         &expr[1..expr.len() - 1]
     } else {
         expr
     };
 
-    if
-        (clean_expr.starts_with('"') && clean_expr.ends_with('"')) ||
-        (clean_expr.starts_with('\'') && clean_expr.ends_with('\''))
+    // 在这里处理 sum 和 avg 的特殊功能
+    if clean_expr.eq_ignore_ascii_case("sum") {
+        let sum: f64 = variables.iter()
+            .filter_map(|(_, value)| value.parse::<f64>().ok())
+            .sum();
+        return Ok(sum.to_string());
+    }
+
+    if clean_expr.eq_ignore_ascii_case("avg") {
+        let values: Vec<f64> = variables.iter()
+            .filter_map(|(_, value)| value.parse::<f64>().ok())
+            .collect();
+        if values.is_empty() {
+            return Ok("0".to_string());
+        }
+        let avg: f64 = values.iter().sum::<f64>() / values.len() as f64;
+        return Ok(avg.to_string());
+    }
+
+    // 原有的表达式处理逻辑
+    if (clean_expr.starts_with('"') && clean_expr.ends_with('"'))
+        || (clean_expr.starts_with('\'') && clean_expr.ends_with('\''))
     {
         let value = clean_expr.trim_matches(|c| (c == '"' || c == '\'')).to_string();
         Ok(value)
