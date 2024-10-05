@@ -203,37 +203,41 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
 }
 
 // 计算表达式或求解线性方程
-// 修改 evaluate_expression 函数以支持[sum]和[avg]的计算
-
 fn evaluate_expression(expr: &str, variables: &HashMap<String, String>) -> Result<String, String> {
+    // 检查表达式是否为条件表达式
+    if expr.starts_with("{if") && expr.ends_with('}') {
+        let condition_expr = &expr[1..expr.len() - 1]; // 去掉大括号
+        let if_regex = Regex::new(r"if\s+(.+?)\s+then\s+(.+?)(?:\s+else\s+(.+))?$").unwrap();
+
+        if let Some(caps) = if_regex.captures(condition_expr) {
+            let condition = &caps[1];
+            let then_value = &caps[2];
+            let else_value = caps.get(3).map_or("", |m| m.as_str());
+
+            // 解析条件
+            let condition_result = evaluate_condition(condition, variables);
+
+            // 根据条件结果返回 then 或 else 部分
+            if condition_result {
+                return evaluate_expression(then_value, variables);
+            } else {
+                return evaluate_expression(else_value, variables);
+            }
+        } else {
+            return Err("Invalid conditional expression".to_string());
+        }
+    }
+
+    // 原有的表达式处理逻辑
     let clean_expr = if expr.starts_with('[') && expr.ends_with(']') {
         &expr[1..expr.len() - 1]
     } else {
         expr
     };
 
-    // 在这里处理 sum 和 avg 的特殊功能
-    if clean_expr.eq_ignore_ascii_case("sum") {
-        let sum: f64 = variables.iter()
-            .filter_map(|(_, value)| value.parse::<f64>().ok())
-            .sum();
-        return Ok(sum.to_string());
-    }
-
-    if clean_expr.eq_ignore_ascii_case("avg") {
-        let values: Vec<f64> = variables.iter()
-            .filter_map(|(_, value)| value.parse::<f64>().ok())
-            .collect();
-        if values.is_empty() {
-            return Ok("0".to_string());
-        }
-        let avg: f64 = values.iter().sum::<f64>() / values.len() as f64;
-        return Ok(avg.to_string());
-    }
-
-    // 原有的表达式处理逻辑
-    if (clean_expr.starts_with('"') && clean_expr.ends_with('"'))
-        || (clean_expr.starts_with('\'') && clean_expr.ends_with('\''))
+    if
+        (clean_expr.starts_with('"') && clean_expr.ends_with('"')) ||
+        (clean_expr.starts_with('\'') && clean_expr.ends_with('\''))
     {
         let value = clean_expr.trim_matches(|c| (c == '"' || c == '\'')).to_string();
         Ok(value)
@@ -249,7 +253,6 @@ fn replace_commas(expr: String) -> String {
     expr.replace(",", "")
 }
 
-// 计算简单表达式
 // 计算简单表达式
 fn evaluate_simple_expression(
     expr: &str,
@@ -353,11 +356,12 @@ fn process_text_with_expressions(line: &str, variables: &HashMap<String, String>
         }
     });
 
-    // 处理括号和特殊字符的高亮
+    // 处理括号和特殊符号的高亮
     let result_with_color = highlight_parentheses(result.to_string());
     let final_result = highlight_special_chars(result_with_color);
 
-    final_result
+    //.highlight_keywords(final_result)
+    highlight_currency(highlight_keywords(final_result))
 }
 
 // 新增函数 evaluate_then_or_else 用来区分处理 [] 和 "" 包裹的值
@@ -471,6 +475,25 @@ fn highlight_special_chars(text: String) -> String {
     let special_chars_regex = Regex::new(r"[%$@|\-=:<>]").unwrap(); // 正确匹配 %$@|\-=:<>
     special_chars_regex
         .replace_all(&text, |caps: &regex::Captures| { format!("{}", caps[0].yellow()) })
+        .to_string()
+}
+
+// 新增函数，用于高亮 let, find, solve 关键字
+fn highlight_keywords(text: String) -> String {
+    let keywords_regex = Regex::new(r"(?i)\b(let|find|solve|已知|求解)\b").unwrap(); // (?i) 表示不区分大小写
+    keywords_regex
+        .replace_all(&text, |caps: &regex::Captures| {
+            format!("{}", caps[0].blue()) // 将关键词设置为蓝色
+        })
+        .to_string()
+}
+
+fn highlight_currency(text: String) -> String {
+    let currency_regex = Regex::new(r"(?i)\b(USD|HKD|CNY|RMB|Error.*)\b").unwrap(); // (?i) 表示不区分大小写
+    currency_regex
+        .replace_all(&text, |caps: &regex::Captures| {
+            format!("{}", caps[0].red()) // 将关键词设置为红色
+        })
         .to_string()
 }
 
