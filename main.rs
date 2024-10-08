@@ -141,48 +141,55 @@ fn process_file(filename: &str) -> io::Result<()> {
 
 // 处理输入行的函数
 fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
-    let mut variables: HashMap<String, String> = HashMap::new(); // 用于存储变量的哈希表
+    let mut variables: HashMap<String, String> = HashMap::new(); // 已计算的变量值
+    let mut raw_variables: HashMap<String, String> = HashMap::new(); // 存储原始的变量值
 
     for line in reader.lines() {
-        let line = line?; // 读取行
-        let original_line = line.replace("\t", "    "); // 将制表符替换为四个空格
+        let line = line?;
+        let original_line = line.replace("\t", "    ");
 
-        // 处理注释，只保留注释前的代码部分，保留空格和制表符
         let line = if let Some((code, _comment)) = original_line.split_once("//") {
-            code // 不再使用 .trim()，保留行中的空格和制表符
+            code
         } else {
             &original_line
         };
 
-        // 忽略空行
         if line.is_empty() {
             continue;
         }
 
-        // 先删除行首空格，专门用于检查以 # 或 --- 开头的情况
         let trimmed_line = line.trim_start();
 
-        // 以 # 开头的行要原样输出，删除 # 并去除内容前后的空格
         if trimmed_line.starts_with('#') {
             let line = trimmed_line.trim_start_matches('#').trim();
             println!("{}", line);
             continue;
         }
 
-        // 如果行以 "---" 开头，输出一个空行
-        if trimmed_line.starts_with("---") {
-            println!(); // 输出空行
-            continue; // 跳过处理该行
+        if trimmed_line.starts_with('!') {
+            let expression = trimmed_line.trim_start_matches('!').trim();
+            match evaluate_expression(expression, &variables) {
+                Ok(result) => println!("{}", result),
+                Err(err_msg) => eprintln!("Error: {}", err_msg),
+            }
+            continue;
         }
 
-        // 处理变量赋值语句
+        if trimmed_line.starts_with("---") {
+            println!();
+            continue;
+        }
+
         if let Some((key, value)) = line.split_once(":=") {
-            let key = key.trim(); // 修整变量名
-            let value = value.trim(); // 修整值
+            let key = key.trim();
+            let value = value.trim();
+
+            // 存储原始表达式值
+            raw_variables.insert(key.to_string(), value.to_string());
 
             match evaluate_expression(value, &variables) {
                 Ok(result) => {
-                    variables.insert(key.to_string(), result); // 将结果存储在变量表中
+                    variables.insert(key.to_string(), result);
                 }
                 Err(err_msg) => {
                     eprintln!(
@@ -193,9 +200,8 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
                 }
             }
         } else {
-            // 使用替换后的原始行进行表达式处理，保留原始行的空格格式
-            let output = process_text_with_expressions(&original_line, &variables);
-            println!("{}", output); // 输出结果，保留原始格式
+            let output = process_text_with_expressions(&original_line, &variables, &raw_variables);
+            println!("{}", output);
         }
     }
 
@@ -234,6 +240,11 @@ fn evaluate_expression(expr: &str, variables: &HashMap<String, String>) -> Resul
     } else {
         expr
     };
+
+    // 新增逻辑：如果 clean_expr 是一个变量名，直接返回其值
+    if let Some(value) = variables.get(clean_expr) {
+        return Ok(value.clone());
+    }
 
     if
         (clean_expr.starts_with('"') && clean_expr.ends_with('"')) ||
@@ -326,20 +337,21 @@ fn replace_variables(expr: String, variables: &HashMap<String, String>) -> Strin
 }
 
 // 处理包含表达式的文本行
-fn process_text_with_expressions(line: &str, variables: &HashMap<String, String>) -> String {
-    // 先处理 {if 条件 then ... [else ...]} 的逻辑
+fn process_text_with_expressions(
+    line: &str,
+    variables: &HashMap<String, String>,
+    raw_variables: &HashMap<String, String>
+) -> String {
     let if_regex = Regex::new(
         r"\{if\s+([^\}]+?)\s+then\s+([^\}]+?)(?:\s+else\s+([^\}]+?))?\}"
     ).unwrap();
     let result = if_regex.replace_all(line, |caps: &regex::Captures| {
         let condition = &caps[1].trim();
         let then_value = &caps[2].trim();
-        let else_value = caps.get(3).map_or("null", |m| m.as_str().trim()); // 默认返回 "null" 如果没有 else 部分
+        let else_value = caps.get(3).map_or("null", |m| m.as_str().trim());
 
-        // 解析条件
         let condition_result = evaluate_condition(condition, variables);
 
-        // 根据条件结果返回 then 或 else 部分
         if condition_result {
             evaluate_then_or_else(then_value, variables)
         } else {
@@ -347,20 +359,40 @@ fn process_text_with_expressions(line: &str, variables: &HashMap<String, String>
         }
     });
 
-    // 处理 [] 包裹的数学表达式
+    // 处理 $[...]，直接取出原始值并替换 *
+    let result = Regex::new(r"\$\[([^\]]*)\]")
+        .unwrap()
+        .replace_all(&result, |caps: &regex::Captures| {
+            let var_name = &caps[1];
+            let default_value = String::new(); // 创建一个持久的String值，避免临时性
+            let expression = raw_variables.get(var_name).unwrap_or(&default_value); // 使用持久的String值，而不是临时值
+
+            // 替换变量名为实际的值
+            let mut expression_with_values = replace_variables(expression.to_string(), variables);
+
+            // 使用正则表达式来确保运算符前后有且仅有一个空格
+            let operator_regex = Regex::new(r"\s*([+\-*/])\s*").unwrap();
+            expression_with_values = operator_regex
+                .replace_all(&expression_with_values, " $1 ")
+                .to_string();
+
+            // 替换 * 为 x
+            expression_with_values = expression_with_values.replace("*", "x");
+
+            expression_with_values
+        });
+
     let result = EXPRESSION_REGEX.replace_all(&result, |caps: &regex::Captures| {
         let expr = &caps[1];
         match evaluate_expression(expr, variables) {
-            Ok(result) => highlight_numbers(&result), // 为结果中的数字加颜色
+            Ok(result) => highlight_numbers(&result),
             Err(err_msg) => format!("[Error: {}]", err_msg),
         }
     });
 
-    // 处理括号和特殊符号的高亮
     let result_with_color = highlight_parentheses(result.to_string());
     let final_result = highlight_special_chars(result_with_color);
 
-    //.highlight_keywords(final_result)
     highlight_currency(highlight_keywords(final_result))
 }
 
@@ -403,48 +435,60 @@ fn evaluate_then_or_else(value: &str, variables: &HashMap<String, String>) -> St
 // 新增一个函数 evaluate_condition 来处理条件判断
 fn evaluate_condition(condition: &str, variables: &HashMap<String, String>) -> bool {
     // 去除条件两端的空格
-    let condition = condition.trim();
+    let mut condition = condition.trim().to_string();
+
+    // 处理 `[]` 表达式
+    if let Some(caps) = EXPRESSION_REGEX.captures(&condition) {
+        let inner_expr = &caps[1];
+        if let Ok(result) = evaluate_expression(inner_expr, variables) {
+            condition = condition.replace(&format!("[{}]", inner_expr), &result);
+        } else {
+            return false; // 如果计算失败，返回 false
+        }
+    }
+
+    // 移除条件中的千位分隔符
+    condition = replace_commas(condition);
 
     // 支持基本的条件运算符
     if condition.contains(">=") {
         let parts: Vec<&str> = condition.split(">=").collect();
-        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) >=
-            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) >=
+               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
     } else if condition.contains("<=") {
         let parts: Vec<&str> = condition.split("<=").collect();
-        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) <=
-            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) <=
+               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
     } else if condition.contains(">") {
         let parts: Vec<&str> = condition.split(">").collect();
-        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) >
-            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) >
+               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
     } else if condition.contains("<") {
         let parts: Vec<&str> = condition.split("<").collect();
-        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) <
-            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) <
+               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
     } else if condition.contains("==") {
         let parts: Vec<&str> = condition.split("==").collect();
-        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) ==
-            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) ==
+               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
     } else if condition.contains("!=") {
         let parts: Vec<&str> = condition.split("!=").collect();
-        return parse_value(parts[0], variables).parse::<f64>().unwrap_or(0.0) !=
-            parse_value(parts[1], variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) !=
+               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
     }
 
     // 如果条件是一个简单的变量或布尔值，处理它
-    let value = parse_value(condition, variables);
+    let value = parse_value(&replace_commas(condition.to_string()), variables);
     value != "0" && value.to_lowercase() != "false"
 }
-
 
 // 解析变量和表达式的辅助函数 parse_value
 fn parse_value(expression: &str, variables: &HashMap<String, String>) -> String {
     let trimmed_expr = expression.trim();
     if let Some(value) = variables.get(trimmed_expr) {
-        value.to_string()
+        return value.replace(",", ""); // 删除逗号
     } else {
-        trimmed_expr.to_string()
+        return trimmed_expr.to_string();
     }
 }
 
