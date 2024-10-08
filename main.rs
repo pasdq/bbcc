@@ -401,35 +401,28 @@ fn evaluate_then_or_else(value: &str, variables: &HashMap<String, String>) -> St
     let mut result = String::new();
     let mut remaining = value;
 
-    // 使用正则表达式找到所有 [] 包裹的表达式
     while let Some(start_bracket) = remaining.find("[") {
         if let Some(end_bracket) = remaining[start_bracket..].find("]") {
-            // 处理 [] 内的表达式
             let expression = &remaining[start_bracket + 1..start_bracket + end_bracket];
-            let expr_result = evaluate_expression(expression, variables).unwrap_or_else(|_|
-                "[Error]".to_string()
-            );
+            let expr_result = evaluate_expression(expression, variables).unwrap_or_else(|_| "[Error]".to_string());
 
-            // 将 [] 前的文本和表达式的结果添加到结果中
             result.push_str(&remaining[..start_bracket]);
             result.push_str(&expr_result);
 
-            // 更新剩余的文本
             remaining = &remaining[start_bracket + end_bracket + 1..];
         } else {
-            break; // 如果没有匹配的结束括号，终止循环
+            break;
         }
     }
 
-    // 添加剩余的文本部分
     result.push_str(remaining);
 
-    // 如果整个内容都没有 []，则直接返回原始内容
     if result.is_empty() {
         result = value.to_string();
     }
 
-    result
+    // 去掉结果两端的引号
+    result.trim_matches(|c| c == '"' || c == '\'').to_string()
 }
 
 // 新增一个函数 evaluate_condition 来处理条件判断
@@ -498,7 +491,7 @@ fn highlight_parentheses(text: String) -> String {
     paren_regex
         .replace_all(&text, |caps: &regex::Captures| {
             // 使用 to_string() 方法将 str 类型转换为 String 类型
-            format!("{}", format!("({})", caps[1].to_string()).red())
+            format!("{}", format!("({})", caps[1].to_string()).green())
         })
         .to_string()
 }
@@ -509,12 +502,12 @@ fn highlight_numbers(text: &str) -> String {
     number_regex
         .replace_all(text, |caps: &regex::Captures| {
             // 将整个数字（包括千位分隔符）设置为绿色
-            format!("{}", caps[0].green())
+            format!("{}", caps[0].red())
         })
         .to_string()
 }
 
-// 处理特殊符号，使其显示为蓝色
+// 处理特殊符号，使其显示为黄色
 fn highlight_special_chars(text: String) -> String {
     let special_chars_regex = Regex::new(r"[%$@|\-=:<>]").unwrap(); // 正确匹配 %$@|\-=:<>
     special_chars_regex
@@ -536,7 +529,7 @@ fn highlight_currency(text: String) -> String {
     let currency_regex = Regex::new(r"(?i)\b(USD|HKD|CNY|RMB|Error.*)\b").unwrap(); // (?i) 表示不区分大小写
     currency_regex
         .replace_all(&text, |caps: &regex::Captures| {
-            format!("{}", caps[0].red()) // 将关键词设置为红色
+            format!("{}", caps[0].yellow()) // 将关键词设置为红色
         })
         .to_string()
 }
