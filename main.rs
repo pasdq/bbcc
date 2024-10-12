@@ -109,7 +109,7 @@ fn watch_file(path: &Path) -> notify::Result<()> {
                         eprintln!("Error: {}", e);
                     }
                     println!(
-                        "\n- Monitoring changes to {} in real-time.\n- BBCC V1.0.0",
+                        "\n- Monitoring changes to {} in real-time.\n- https://github.com/pasdq\n- V1.0.0",
                         path.display()
                     );
                 }
