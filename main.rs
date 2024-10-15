@@ -213,7 +213,7 @@ fn evaluate_expression(expr: &str, variables: &HashMap<String, String>) -> Resul
     // 检查表达式是否为条件表达式
     if expr.starts_with("{if") && expr.ends_with('}') {
         let condition_expr = &expr[1..expr.len() - 1]; // 去掉大括号
-        let if_regex = Regex::new(r"if\s+(.+?)\s+then\s+(.+?)(?:\s+else\s+(.+))?$").unwrap();
+	let if_regex = Regex::new(r"(?i)if\s+(.+?)\s+then\s+(.+?)(?:\s+else\s+(.+))?$").unwrap();
 
         if let Some(caps) = if_regex.captures(condition_expr) {
             let condition = &caps[1];
@@ -343,7 +343,7 @@ fn process_text_with_expressions(
     raw_variables: &HashMap<String, String>
 ) -> String {
     let if_regex = Regex::new(
-        r"\{if\s+([^\}]+?)\s+then\s+([^\}]+?)(?:\s+else\s+([^\}]+?))?\}"
+	r"(?i)\{if\s+([^\}]+?)\s+then\s+([^\}]+?)(?:\s+else\s+([^\}]+?))?\}",
     ).unwrap();
     let result = if_regex.replace_all(line, |caps: &regex::Captures| {
         let condition = &caps[1].trim();
