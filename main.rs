@@ -148,60 +148,67 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
         let line = line?;
         let original_line = line.replace("\t", "    ");
 
-        let line = if let Some((code, _comment)) = original_line.split_once("//") {
-            code
-        } else {
-            &original_line
-        };
+        // 新增逻辑：根据分号分割行，并去除前后的空格
+        let semicolon_regex = Regex::new(r"\s*;\s*").unwrap();
+        let modified_line = semicolon_regex.replace_all(&original_line, ";");
+        let sub_lines: Vec<&str> = modified_line.split(';').collect();
 
-        if line.is_empty() {
-            continue;
-        }
+        for sub_line in sub_lines {
+            let line = if let Some((code, _comment)) = sub_line.split_once("//") {
+                code
+            } else {
+                sub_line
+            };
 
-        let trimmed_line = line.trim_start();
-
-        if trimmed_line.starts_with('#') {
-            let line = trimmed_line.trim_start_matches('#').trim();
-            println!("{}", line);
-            continue;
-        }
-
-        if trimmed_line.starts_with('!') {
-            let expression = trimmed_line.trim_start_matches('!').trim();
-            match evaluate_expression(expression, &variables) {
-                Ok(result) => println!("{}", result),
-                Err(err_msg) => eprintln!("Error: {}", err_msg),
+            if line.is_empty() {
+                continue;
             }
-            continue;
-        }
 
-        if trimmed_line.starts_with("---") {
-            println!();
-            continue;
-        }
+            let trimmed_line = line.trim_start();
 
-        if let Some((key, value)) = line.split_once(":=") {
-            let key = key.trim();
-            let value = value.trim();
-
-            // 存储原始表达式值
-            raw_variables.insert(key.to_string(), value.to_string());
-
-            match evaluate_expression(value, &variables) {
-                Ok(result) => {
-                    variables.insert(key.to_string(), result);
-                }
-                Err(err_msg) => {
-                    eprintln!(
-                        "Error: Could not evaluate expression '{}'. Reason: {}",
-                        value,
-                        err_msg
-                    );
-                }
+            if trimmed_line.starts_with('#') {
+                let line = trimmed_line.trim_start_matches('#').trim();
+                println!("{}", line);
+                continue;
             }
-        } else {
-            let output = process_text_with_expressions(&original_line, &variables, &raw_variables);
-            println!("{}", output);
+
+            if trimmed_line.starts_with('!') {
+                let expression = trimmed_line.trim_start_matches('!').trim();
+                match evaluate_expression(expression, &variables) {
+                    Ok(result) => println!("{}", result),
+                    Err(err_msg) => eprintln!("Error: {}", err_msg),
+                }
+                continue;
+            }
+
+            if trimmed_line.starts_with("---") {
+                println!();
+                continue;
+            }
+
+            if let Some((key, value)) = line.split_once(":=") {
+                let key = key.trim();
+                let value = value.trim();
+
+                // 存储原始表达式值
+                raw_variables.insert(key.to_string(), value.to_string());
+
+                match evaluate_expression(value, &variables) {
+                    Ok(result) => {
+                        variables.insert(key.to_string(), result);
+                    }
+                    Err(err_msg) => {
+                        eprintln!(
+                            "Error: Could not evaluate expression '{}'. Reason: {}",
+                            value,
+                            err_msg
+                        );
+                    }
+                }
+            } else {
+                let output = process_text_with_expressions(&line, &variables, &raw_variables);
+                println!("{}", output);
+            }
         }
     }
 
