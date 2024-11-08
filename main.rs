@@ -1,19 +1,19 @@
 use colored::*; //终端颜色设置
 use std::env; // 处理命令行参数
 use std::fs::File; // 处理文件操作
-use std::io::{ self, BufRead }; // 标准输入/输出操作
+use std::io::{self, BufRead}; // 标准输入/输出操作
 use std::collections::HashMap; // 定义哈希表数据结构
 use evalexpr::*; // 引入 evalexpr 库，用于计算表达式
 use lazy_static::lazy_static; // 引入 lazy_static 宏，运行时初始化静态变量
 use std::sync::Mutex; // 多线程互斥锁
 use regex::Regex; // 正则表达式库
-use notify::{ Watcher, RecursiveMode, RecommendedWatcher, Event, EventKind }; // 文件系统通知，监控文件更改
+use notify::{Watcher, RecursiveMode, RecommendedWatcher, Event, EventKind}; // 文件系统通知，监控文件更改
 use std::sync::mpsc::channel; // 多线程消息通道
 use std::path::Path; // 处理文件路径
-use std::sync::atomic::{ AtomicBool, Ordering }; // 原子布尔值，线程间共享状态
+use std::sync::atomic::{AtomicBool, Ordering}; // 原子布尔值，线程间共享状态
 use std::sync::Arc; // 原子引用计数，共享数据
 use std::process::Command; // 执行外部命令
-use num_format::{ Locale, ToFormattedString }; // 数字格式化库
+use num_format::{Locale, ToFormattedString}; // 数字格式化库
 
 // 全局静态变量 PRECISION，用于控制小数精度，线程安全
 lazy_static! {
@@ -25,25 +25,34 @@ fn main() {
     let args: Vec<String> = env::args().collect(); // 获取命令行参数
     if args.len() < 2 {
         // 参数不足时提示用法错误
-        eprintln!("Usage: {} [-r | -p] <filename>", args[0]);
+        eprintln!("Usage: {} [-r | -p | -s] <filename> | <expression>", args[0]);
         return;
     }
 
     let mut watch_mode = false; // 是否监视文件模式
     let mut pipe_mode = false; // 是否从管道接收数据模式
+    let mut string_mode = false; // 是否从命令行字符串接收数据模式
     let filename: Option<&str>;
+    let expression: Option<&str>;
 
-    // 检查命令行参数是否为 -r 或 -p
+    // 检查命令行参数是否为 -r, -p 或 -s
     if args[1] == "-r" && args.len() == 3 {
         watch_mode = true;
         filename = Some(&args[2]);
+        expression = None;
     } else if args[1] == "-p" {
         pipe_mode = true;
         filename = None;
+        expression = None;
+    } else if args[1] == "-s" && args.len() == 3 {
+        string_mode = true;
+        expression = Some(&args[2]);
+        filename = None;
     } else if args.len() == 2 {
         filename = Some(&args[1]);
+        expression = None;
     } else {
-        eprintln!("Usage: {} [-r | -p] <filename>", args[0]);
+        eprintln!("Usage: {} [-r | -p | -s] <filename> | <expression>", args[0]);
         return;
     }
 
@@ -61,6 +70,12 @@ fn main() {
         if let Err(e) = process_from_stdin() {
             // 从管道读取数据
             eprintln!("Error: {}", e);
+        }
+    } else if string_mode {
+        if let Some(expr) = expression {
+            if let Err(e) = process_expression(expr) {
+                eprintln!("Error: {}", e);
+            }
         }
     } else if let Some(file) = filename {
         if let Err(e) = process_file(file) {
@@ -92,18 +107,20 @@ fn watch_file(path: &Path) -> notify::Result<()> {
     let r = running.clone();
 
     // Ctrl-C 信号处理器，当用户按下 Ctrl-C 时，停止监视
-    ctrlc
-        ::set_handler(move || {
-            r.store(false, Ordering::SeqCst);
-        })
-        .expect("Error setting Ctrl-C handler");
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    })
+    .expect("Error setting Ctrl-C handler");
 
     watcher.watch(path, RecursiveMode::NonRecursive)?; // 开始监视文件
 
     while running.load(Ordering::SeqCst) {
         if let Ok(res) = rx.recv_timeout(std::time::Duration::from_millis(500)) {
             match res {
-                Ok(Event { kind: EventKind::Modify(..), .. }) => {
+                Ok(Event {
+                    kind: EventKind::Modify(..),
+                    ..
+                }) => {
                     clear_screen();
                     if let Err(e) = process_file(path.to_str().unwrap()) {
                         eprintln!("Error: {}", e);
@@ -128,8 +145,23 @@ fn watch_file(path: &Path) -> notify::Result<()> {
 // 从标准输入（管道）读取数据并处理
 fn process_from_stdin() -> io::Result<()> {
     let stdin = io::stdin();
-    let reader = stdin.lock(); // 锁定标准输入
-    process_lines(reader) // 处理输入的每一行
+    let reader = stdin.lock();
+    let mut lines: Vec<String> = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed_line = line.trim().trim_matches(|c| c == '"' || c == '\'');
+        lines.push(trimmed_line.to_string());
+    }
+
+    process_lines(io::Cursor::new(lines.join("\n").as_bytes()))
+}
+
+// 处理命令行传入的表达式
+fn process_expression(expr: &str) -> io::Result<()> {
+    // 将表达式视作单行输入
+    let input = expr.trim().trim_matches(|c| c == '"' || c == '\'');
+    process_lines(io::Cursor::new(input.as_bytes()))
 }
 
 // 处理文件内容
@@ -220,7 +252,7 @@ fn evaluate_expression(expr: &str, variables: &HashMap<String, String>) -> Resul
     // 检查表达式是否为条件表达式
     if expr.starts_with("{if") && expr.ends_with('}') {
         let condition_expr = &expr[1..expr.len() - 1]; // 去掉大括号
-	let if_regex = Regex::new(r"(?i)if\s+(.+?)\s+then\s+(.+?)(?:\s+else\s+(.+))?$").unwrap();
+        let if_regex = Regex::new(r"(?i)if\s+(.+?)\s+then\s+(.+?)(?:\s+else\s+(.+))?$").unwrap();
 
         if let Some(caps) = if_regex.captures(condition_expr) {
             let condition = &caps[1];
@@ -253,9 +285,8 @@ fn evaluate_expression(expr: &str, variables: &HashMap<String, String>) -> Resul
         return Ok(value.clone());
     }
 
-    if
-        (clean_expr.starts_with('"') && clean_expr.ends_with('"')) ||
-        (clean_expr.starts_with('\'') && clean_expr.ends_with('\''))
+    if (clean_expr.starts_with('"') && clean_expr.ends_with('"'))
+        || (clean_expr.starts_with('\'') && clean_expr.ends_with('\''))
     {
         let value = clean_expr.trim_matches(|c| (c == '"' || c == '\'')).to_string();
         Ok(value)
@@ -274,13 +305,12 @@ fn replace_commas(expr: String) -> String {
 // 计算简单表达式
 fn evaluate_simple_expression(
     expr: &str,
-    variables: &HashMap<String, String>
+    variables: &HashMap<String, String>,
 ) -> Result<String, String> {
     // 如果表达式本身是一个变量名，且该变量的值是字符串，直接返回该变量值
     if let Some(value) = variables.get(expr) {
-        if
-            (value.starts_with('"') && value.ends_with('"')) ||
-            (value.starts_with('\'') && value.ends_with('\''))
+        if (value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\''))
         {
             // 如果变量是字符串，直接返回其值去掉引号（双引号或单引号）
             return Ok(value.trim_matches(|c| (c == '"' || c == '\'')).to_string());
@@ -347,11 +377,12 @@ fn replace_variables(expr: String, variables: &HashMap<String, String>) -> Strin
 fn process_text_with_expressions(
     line: &str,
     variables: &HashMap<String, String>,
-    raw_variables: &HashMap<String, String>
+    raw_variables: &HashMap<String, String>,
 ) -> String {
     let if_regex = Regex::new(
-	r"(?i)\{if\s+([^\}]+?)\s+then\s+([^\}]+?)(?:\s+else\s+([^\}]+?))?\}",
-    ).unwrap();
+        r"(?i)\{if\s+([^\}]+?)\s+then\s+([^\}]+?)(?:\s+else\s+([^\}]+?))?\}",
+    )
+    .unwrap();
     let result = if_regex.replace_all(line, |caps: &regex::Captures| {
         let condition = &caps[1].trim();
         let then_value = &caps[2].trim();
@@ -411,7 +442,8 @@ fn evaluate_then_or_else(value: &str, variables: &HashMap<String, String>) -> St
     while let Some(start_bracket) = remaining.find("[") {
         if let Some(end_bracket) = remaining[start_bracket..].find("]") {
             let expression = &remaining[start_bracket + 1..start_bracket + end_bracket];
-            let expr_result = evaluate_expression(expression, variables).unwrap_or_else(|_| "[Error]".to_string());
+            let expr_result =
+                evaluate_expression(expression, variables).unwrap_or_else(|_| "[Error]".to_string());
 
             result.push_str(&remaining[..start_bracket]);
             result.push_str(&expr_result);
@@ -453,28 +485,52 @@ fn evaluate_condition(condition: &str, variables: &HashMap<String, String>) -> b
     // 支持基本的条件运算符
     if condition.contains(">=") {
         let parts: Vec<&str> = condition.split(">=").collect();
-        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) >=
-               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables)
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            >= parse_value(&replace_commas(parts[1].to_string()), variables)
+                .parse::<f64>()
+                .unwrap_or(0.0);
     } else if condition.contains("<=") {
         let parts: Vec<&str> = condition.split("<=").collect();
-        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) <=
-               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables)
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            <= parse_value(&replace_commas(parts[1].to_string()), variables)
+                .parse::<f64>()
+                .unwrap_or(0.0);
     } else if condition.contains(">") {
         let parts: Vec<&str> = condition.split(">").collect();
-        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) >
-               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables)
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            > parse_value(&replace_commas(parts[1].to_string()), variables)
+                .parse::<f64>()
+                .unwrap_or(0.0);
     } else if condition.contains("<") {
         let parts: Vec<&str> = condition.split("<").collect();
-        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) <
-               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables)
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            < parse_value(&replace_commas(parts[1].to_string()), variables)
+                .parse::<f64>()
+                .unwrap_or(0.0);
     } else if condition.contains("==") {
         let parts: Vec<&str> = condition.split("==").collect();
-        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) ==
-               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables)
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            == parse_value(&replace_commas(parts[1].to_string()), variables)
+                .parse::<f64>()
+                .unwrap_or(0.0);
     } else if condition.contains("!=") {
         let parts: Vec<&str> = condition.split("!=").collect();
-        return parse_value(&replace_commas(parts[0].to_string()), variables).parse::<f64>().unwrap_or(0.0) !=
-               parse_value(&replace_commas(parts[1].to_string()), variables).parse::<f64>().unwrap_or(0.0);
+        return parse_value(&replace_commas(parts[0].to_string()), variables)
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            != parse_value(&replace_commas(parts[1].to_string()), variables)
+                .parse::<f64>()
+                .unwrap_or(0.0);
     }
 
     // 如果条件是一个简单的变量或布尔值，处理它
@@ -518,7 +574,7 @@ fn highlight_numbers(text: &str) -> String {
 fn highlight_special_chars(text: String) -> String {
     let special_chars_regex = Regex::new(r"[%$@|\-=:<>]").unwrap(); // 正确匹配 %$@|\-=:<>
     special_chars_regex
-        .replace_all(&text, |caps: &regex::Captures| { format!("{}", caps[0].yellow()) })
+        .replace_all(&text, |caps: &regex::Captures| format!("{}", caps[0].yellow()))
         .to_string()
 }
 
@@ -545,38 +601,41 @@ fn highlight_currency(text: String) -> String {
 fn solve_linear_equation(
     lhs: &str,
     rhs: &str,
-    variables: &HashMap<String, String>
+    variables: &HashMap<String, String>,
 ) -> Result<String, String> {
-    let lhs_replaced = replace_commas(
-        replace_variables(lhs.replace(" ", "").replace("X", "x"), variables)
-    );
-    let rhs_replaced = replace_commas(
-        replace_variables(rhs.replace(" ", "").replace("X", "x"), variables)
-    );
+    let lhs_replaced =
+        replace_commas(replace_variables(lhs.replace(" ", "").replace("X", "x"), variables));
+    let rhs_replaced =
+        replace_commas(replace_variables(rhs.replace(" ", "").replace("X", "x"), variables));
 
     if lhs_replaced.contains('x') || rhs_replaced.contains('x') {
         let x = "x";
 
-        let lhs_value = eval(&replace_percentage(&lhs_replaced.replace(x, "0.0"))).map_err(|_|
-            "Error evaluating LHS".to_string()
-        )?;
-        let rhs_value = eval(&replace_percentage(&rhs_replaced.replace(x, "0.0"))).map_err(|_|
-            "Error evaluating RHS".to_string()
-        )?;
+        let lhs_value =
+            eval(&replace_percentage(&lhs_replaced.replace(x, "0.0"))).map_err(|_| {
+                "Error evaluating LHS".to_string()
+            })?;
+        let rhs_value =
+            eval(&replace_percentage(&rhs_replaced.replace(x, "0.0"))).map_err(|_| {
+                "Error evaluating RHS".to_string()
+            })?;
 
-        let coefficient = eval(&replace_percentage(&lhs_replaced.replace(x, "1.0"))).map_err(|_|
-            "Error evaluating coefficient".to_string()
-        )?;
+        let coefficient =
+            eval(&replace_percentage(&lhs_replaced.replace(x, "1.0"))).map_err(|_| {
+                "Error evaluating coefficient".to_string()
+            })?;
 
-        let lhs_value_num = lhs_value.as_number().map_err(|_| "LHS is not a number".to_string())?;
-        let rhs_value_num = rhs_value.as_number().map_err(|_| "RHS is not a number".to_string())?;
+        let lhs_value_num =
+            lhs_value.as_number().map_err(|_| "LHS is not a number".to_string())?;
+        let rhs_value_num =
+            rhs_value.as_number().map_err(|_| "RHS is not a number".to_string())?;
         let coefficient_num =
-            coefficient.as_number().map_err(|_| "Coefficient is not a number".to_string())? -
-            lhs_value_num;
+            coefficient.as_number().map_err(|_| "Coefficient is not a number".to_string())?
+                - lhs_value_num;
 
         if coefficient_num == 0.0 {
             return Err(
-                "Invalid equation: coefficient of x is zero or not a linear equation".to_string()
+                "Invalid equation: coefficient of x is zero or not a linear equation".to_string(),
             );
         }
 
