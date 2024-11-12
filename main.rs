@@ -367,8 +367,9 @@ fn evaluate_simple_expression(
 fn replace_variables(expr: String, variables: &HashMap<String, String>) -> String {
     let mut replaced_expr = expr;
     for (key, value) in variables {
-        let cleaned_value = value.replace(",", "");
-        replaced_expr = replaced_expr.replace(key, &cleaned_value);
+        let pattern = format!(r"\b{}\b", regex::escape(key));
+        let re = Regex::new(&pattern).unwrap();
+        replaced_expr = re.replace_all(&replaced_expr, value).to_string();
     }
     replaced_expr
 }
