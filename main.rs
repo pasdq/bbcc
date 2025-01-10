@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering}; // 原子布尔值，线程间共
 use std::sync::Arc; // 原子引用计数，共享数据
 use std::process::Command; // 执行外部命令
 use num_format::{Locale, ToFormattedString}; // 数字格式化库
+use terminal_size::{Width, terminal_size};
 
 // 全局静态变量 PRECISION，用于控制小数精度，线程安全
 lazy_static! {
@@ -125,10 +126,7 @@ fn watch_file(path: &Path) -> notify::Result<()> {
                     if let Err(e) = process_file(path.to_str().unwrap()) {
                         eprintln!("Error: {}", e);
                     }
-                    println!(
-                        "\n- Monitoring changes to {} in real-time.\n- https://github.com/pasdq\n- V1.0.0",
-                        path.display()
-                    );
+                    println!("\n- Document Parsing Tools V1.0.0");
                 }
                 Ok(_) => {} // 忽略其他事件
                 Err(e) => eprintln!("Watch error: {:?}", e), // 错误处理
@@ -176,6 +174,8 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
     let mut variables: HashMap<String, String> = HashMap::new(); // 已计算的变量值
     let mut raw_variables: HashMap<String, String> = HashMap::new(); // 存储原始的变量值
 
+    let mut stack: Vec<usize> = Vec::new(); // 用于存储每个层级的序号
+
     for line in reader.lines() {
         let line = line?;
         let original_line = line.replace("\t", "    ");
@@ -204,21 +204,78 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
                 continue;
             }
 
-            if trimmed_line.starts_with('!') {
-                let expression = trimmed_line.trim_start_matches('!').trim();
-                match evaluate_expression(expression, &variables) {
-                    Ok(result) => println!("{}", result),
-                    Err(err_msg) => eprintln!("Error: {}", err_msg),
-                }
-                continue;
-            }
-
             if trimmed_line.starts_with("---") {
                 println!();
                 continue;
             }
 
-            if let Some((key, value)) = line.split_once(":=") {
+            // 在适当的地方添加以下代码以实现新的语法解析
+            if trimmed_line.starts_with("===") {
+                let width = terminal_size().map(|(Width(w), _)| w as usize).unwrap_or(80); // 假设默认宽度为 80
+                let line_of_equals = "-".repeat(width);
+                println!("{}", line_of_equals);
+                continue;
+            }
+
+            // 新增逻辑：解析 `>` 开头的行并替换为序号
+            if trimmed_line.starts_with('>') {
+                let level = line.chars().take_while(|c| c.is_whitespace()).count() / 4;
+                if stack.len() <= level {
+                    stack.push(0);
+                }
+                stack[level] += 1;
+                if level < stack.len() - 1 {
+                    stack.truncate(level + 1);
+                }
+                let number_prefix = stack.iter()
+                    .map(|&n| format!("{:02}", n))
+                    .collect::<Vec<_>>()
+                    .join("."); // 先生成序数和点号的字符串
+                let number_prefix_colored = format!("{}.", number_prefix).blue(); // 将序数和点号一起设为蓝色
+                let content = &trimmed_line[1..].trim();
+                let highlighted_content = process_text_with_expressions(content, &variables, &raw_variables);
+                let line = format!("{} {}", number_prefix_colored, highlighted_content);
+                println!("{}", line);
+                continue;
+            }
+
+            // 新增逻辑：解析 [A := 12] 语法
+            let assignment_regex = Regex::new(r"\[([^:=\]]+)\s*:=\s*([^\]]+)\]").unwrap();
+            let mut modified_line = line.to_string();
+            let mut assignment_results = Vec::new();
+
+            for caps in assignment_regex.captures_iter(&line) {
+                let key = caps[1].trim().to_string();
+                let value = caps[2].trim().to_string();
+
+                // 存储原始表达式值
+                raw_variables.insert(key.clone(), value.clone());
+
+                match evaluate_expression(&value, &variables) {
+                    Ok(result) => {
+                        variables.insert(key.clone(), result.clone());
+                        // 将 [A := 12] 替换为 12
+                        assignment_results.push((caps[0].to_string(), result));
+                    }
+                    Err(err_msg) => {
+                        eprintln!(
+                            "Error: Could not evaluate expression '{}'. Reason: {}",
+                            value,
+                            err_msg
+                        );
+                        // 如果解析失败，保留原始内容
+                        assignment_results.push((caps[0].to_string(), caps[0].to_string()));
+                    }
+                }
+            }
+
+            // 替换 [A := 12] 为解析后的值
+            for (pattern, replacement) in assignment_results {
+                modified_line = modified_line.replace(&pattern, &replacement);
+            }
+
+            // 处理剩余的赋值操作
+            if let Some((key, value)) = modified_line.split_once(":=") {
                 let key = key.trim();
                 let value = value.trim();
 
@@ -238,7 +295,7 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
                     }
                 }
             } else {
-                let output = process_text_with_expressions(&line, &variables, &raw_variables);
+                let output = process_text_with_expressions(&modified_line, &variables, &raw_variables);
                 println!("{}", output);
             }
         }
@@ -384,8 +441,9 @@ fn process_text_with_expressions(
         r"(?i)\{if\s+([^\}]+?)\s+then\s+([^\}]+?)(?:\s+else\s+([^\}]+?))?\}",
     )
     .unwrap();
-    let result = if_regex.replace_all(line, |caps: &regex::Captures| {
-        let condition = &caps[1].trim();
+
+    let intermediate_result = if_regex.replace_all(line, |caps: &regex::Captures| {
+                let condition = &caps[1].trim();
         let then_value = &caps[2].trim();
         let else_value = caps.get(3).map_or("null", |m| m.as_str().trim());
 
@@ -398,10 +456,10 @@ fn process_text_with_expressions(
         }
     });
 
-    // 处理 $[...]，直接取出原始值并替换 *
-    let result = Regex::new(r"\$\[([^\]]*)\]")
+    // 处理 $[...] 语法
+    let intermediate_result = Regex::new(r"\$\[([^\]]*)\]")
         .unwrap()
-        .replace_all(&result, |caps: &regex::Captures| {
+        .replace_all(&intermediate_result, |caps: &regex::Captures| {
             let var_name = &caps[1];
             let default_value = String::new(); // 创建一个持久的String值，避免临时性
             let expression = raw_variables.get(var_name).unwrap_or(&default_value); // 使用持久的String值，而不是临时值
@@ -421,7 +479,27 @@ fn process_text_with_expressions(
             expression_with_values
         });
 
-    let result = EXPRESSION_REGEX.replace_all(&result, |caps: &regex::Captures| {
+    // 处理 @[...] 语法
+    let intermediate_result = Regex::new(r"@\[(.*?)\]")
+        .unwrap()
+        .replace_all(&intermediate_result, |caps: &regex::Captures| {
+            let expression = &caps[1];
+
+            // 对表达式中的变量进行替换，生成一个替换后的表达式
+            let evaluated_expr = replace_variables(expression.to_string(), variables);
+
+            // 确保运算符前后有空格，并将 '*' 替换为 'x'
+            let operator_regex = Regex::new(r"([+\-/*])").unwrap();
+            let spaced_expr = operator_regex.replace_all(&evaluated_expr, " $1 ");
+            let spaced_expr = spaced_expr.replace("*", "x");
+
+            match evaluate_expression(expression, variables) {
+                Ok(result) => format!("{} = {}", spaced_expr.trim(), result),
+                Err(err_msg) => format!("[Error: {}]", err_msg),
+            }
+        });
+
+    let result = EXPRESSION_REGEX.replace_all(&intermediate_result, |caps: &regex::Captures| {
         let expr = &caps[1];
         match evaluate_expression(expr, variables) {
             Ok(result) => highlight_numbers(&result),
@@ -573,7 +651,7 @@ fn highlight_numbers(text: &str) -> String {
 
 // 处理特殊符号，使其显示为黄色
 fn highlight_special_chars(text: String) -> String {
-    let special_chars_regex = Regex::new(r"[%$@|\-=:<>]").unwrap(); // 正确匹配 %$@|\-=:<>
+    let special_chars_regex = Regex::new(r"[%$@|?\-+=:<>]").unwrap(); // 正确匹配 %$@|\-=:<>
     special_chars_regex
         .replace_all(&text, |caps: &regex::Captures| format!("{}", caps[0].yellow()))
         .to_string()
@@ -581,7 +659,7 @@ fn highlight_special_chars(text: String) -> String {
 
 // 新增函数，用于高亮 let, find, solve 关键字
 fn highlight_keywords(text: String) -> String {
-    let keywords_regex = Regex::new(r"(?i)\b(let|find|solve|已知|求解)\b").unwrap(); // (?i) 表示不区分大小写
+    let keywords_regex = Regex::new(r"(?i)\b(let|find|solve|then|done|result|已知|求解|那么|结果)\b").unwrap(); // (?i) 表示不区分大小写
     keywords_regex
         .replace_all(&text, |caps: &regex::Captures| {
             format!("{}", caps[0].blue()) // 将关键词设置为蓝色
