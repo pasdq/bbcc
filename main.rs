@@ -175,6 +175,7 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
     let mut raw_variables: HashMap<String, String> = HashMap::new(); // 存储原始的变量值
 
     let mut stack: Vec<usize> = Vec::new(); // 用于存储每个层级的序号
+    let mut reset_counter = false; // 新增的标志变量，用来判断是否需要复位计数器
 
     for line in reader.lines() {
         let line = line?;
@@ -198,27 +199,42 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
 
             let trimmed_line = line.trim_start();
 
-            if trimmed_line.starts_with('#') {
-                let line = trimmed_line.trim_start_matches('#').trim();
-                println!("{}", line);
-                continue;
-            }
+            // 检查是否有连续的三个 `>>>`，如果有则复位计数器，并删除行中的 `>>>`
+           if trimmed_line.contains(">>>") {
+               let cleaned_line = trimmed_line.replace(">>>", "").trim().to_string();
+               reset_counter = true;
+	                 
+               // 如果删除后行为空字符串或仅包含空格，则跳过输出
+               if !cleaned_line.is_empty() {
+                   // 确保删除 >>> 后的行仍然进行格式化
+                   let formatted_line = process_text_with_expressions(&cleaned_line, &variables, &raw_variables);
+                   println!("{}", formatted_line);
+               }
+	                 
+               continue; // 继续处理下一行
+           }
 
-            if trimmed_line.starts_with("---") {
-                println!();
-                continue;
-            }
-
-            // 在适当的地方添加以下代码以实现新的语法解析
+            // 处理 `===` 逻辑，打印分隔线
             if trimmed_line.starts_with("===") {
-                let width = terminal_size().map(|(Width(w), _)| w as usize).unwrap_or(80); // 假设默认宽度为 80
-                let line_of_equals = "-".repeat(width);
+                let width = terminal_size().map(|(Width(w), _)| w as usize).unwrap_or(80); // 默认宽度 80
+                let line_of_equals = "-".repeat(width); // 生成分隔符
                 println!("{}", line_of_equals);
-                continue;
+                continue; // 继续处理下一行，不影响计数器
             }
 
-            // 新增逻辑：解析 `>` 开头的行并替换为序号
+            // 处理 `---`，输出一个空行
+            if trimmed_line.starts_with("---") {
+                println!(); // 输出空行
+                continue; // 跳过继续处理
+            }
+
             if trimmed_line.starts_with('>') {
+                // 如果需要复位计数器，则从 1 开始
+                if reset_counter {
+                    stack.clear();
+                    reset_counter = false;
+                }
+
                 let level = line.chars().take_while(|c| c.is_whitespace()).count() / 4;
                 if stack.len() <= level {
                     stack.push(0);
@@ -230,13 +246,13 @@ fn process_lines<R: BufRead>(reader: R) -> io::Result<()> {
                 let number_prefix = stack.iter()
                     .map(|&n| format!("{:02}", n))
                     .collect::<Vec<_>>()
-                    .join("."); // 先生成序数和点号的字符串
-                let number_prefix_colored = format!("{}.", number_prefix).blue(); // 将序数和点号一起设为蓝色
+                    .join("."); // 生成序号字符串
+                let number_prefix_colored = format!("{}.", number_prefix).blue(); // 蓝色显示
                 let content = &trimmed_line[1..].trim();
                 let highlighted_content = process_text_with_expressions(content, &variables, &raw_variables);
                 let line = format!("{} {}", number_prefix_colored, highlighted_content);
                 println!("{}", line);
-                continue;
+                continue; // 跳过处理 `>>>` 本身，防止显示
             }
 
             // 新增逻辑：解析 [A := 12] 语法
